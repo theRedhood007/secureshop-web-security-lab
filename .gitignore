@@ -1,0 +1,6 @@
+.env
+*.zip
+*.rar
+*.crt
+/vendor/
+/node_modules/

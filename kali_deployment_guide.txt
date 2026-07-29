@@ -1,0 +1,536 @@
+# SecureShop Deployment Guide for Kali Linux
+
+## Step 1: Install and Configure Apache & MariaDB
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Apache web server
+sudo apt install apache2 -y
+
+# Install MariaDB server
+sudo apt install mariadb-server -y
+
+# Install PHP and required modules
+sudo apt install php php-mysql php-mysqli libapache2-mod-php -y
+
+# Start and enable services
+sudo systemctl start apache2
+sudo systemctl enable apache2
+sudo systemctl start mariadb
+sudo systemctl enable mariadb
+
+# Check service status
+sudo systemctl status apache2
+sudo systemctl status mariadb
+```
+
+## Step 2: Secure MariaDB Installation
+
+```bash
+# Run MariaDB security script
+sudo mysql_secure_installation
+
+# Follow the prompts:
+# - Set root password (choose a strong password)
+# - Remove anonymous users: Y
+# - Disallow root login remotely: Y
+# - Remove test database: Y
+# - Reload privilege tables: Y
+```
+
+## Step 3: Create Database and User
+
+```bash
+# Login to MariaDB as root
+sudo mysql -u root -p
+
+# Create database and user (run these SQL commands)
+```
+
+```sql
+-- Create the database
+CREATE DATABASE secureshop;
+
+-- Create a user for the application
+CREATE USER 'shopuser'@'localhost' IDENTIFIED BY 'vulnerable123';
+
+-- Grant privileges (intentionally weak for the project)
+GRANT ALL PRIVILEGES ON secureshop.* TO 'shopuser'@'localhost';
+FLUSH PRIVILEGES;
+
+-- Use the database
+USE secureshop;
+
+-- Create users table
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    is_admin TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create products table
+CREATE TABLE products (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    price DECIMAL(10,2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert sample data with flags for CTF
+INSERT INTO users (username, password, is_admin) VALUES 
+('admin', 'admin123', 1),
+('user1', 'password123', 0),
+('flag_user', 'flag_{a1b2-c3d4-e5f6}', 0);
+
+INSERT INTO products (name, description, price) VALUES 
+('Laptop', 'High-performance laptop with flag_{1234-5678-9abc}', 999.99),
+('Phone', 'Latest smartphone', 599.99),
+('Tablet', 'Lightweight tablet', 299.99),
+('Secret Item', 'Hidden product with flag_{def0-1234-5678}', 1337.00);
+
+-- Exit MariaDB
+EXIT;
+```
+
+## Step 4: Deploy Website Files
+
+```bash
+# Navigate to web directory
+cd /var/www/html
+
+# Remove default index.html
+sudo rm index.html
+
+# Create project directory (optional, or use html directly)
+sudo mkdir secureshop
+cd secureshop
+
+# Set proper ownership
+sudo chown -R www-data:www-data /var/www/html/
+sudo chmod -R 755 /var/www/html/
+```
+
+## Step 5: Create PHP Files
+
+Create each file with the vulnerable code. Use `sudo nano filename.php` for each file:
+
+### db.php
+```php
+<?php
+$servername = "localhost";
+$username = "shopuser";
+$password = "vulnerable123";
+$dbname = "secureshop";
+
+$conn = new mysqli($servername, $username, $password, $dbname);
+if ($conn->connect_error) {
+    die("Connection failed: " . $conn->connect_error);
+}
+?>
+```
+
+### index.php
+```php
+<?php
+session_start();
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>SecureShop - Vulnerable Web App</title></head>
+<body>
+<h1>Welcome to SecureShop</h1>
+<p><em>Warning: This is an intentionally vulnerable application for educational purposes!</em></p>
+
+<?php if (isset($_SESSION['username'])): ?>
+    <p>Hello, <?= $_SESSION['username'] ?>!</p>
+    <ul>
+        <li><a href="products.php">Browse Products</a></li>
+        <?php if ($_SESSION['is_admin'] == 1): ?>
+            <li><a href="admin.php">Admin Panel</a></li>
+        <?php endif; ?>
+        <li><a href="logout.php">Logout</a></li>
+    </ul>
+<?php else: ?>
+    <ul>
+        <li><a href="login.php">Login</a></li>
+        <li><a href="register.php">Register</a></li>
+        <li><a href="products.php">Browse Products</a></li>
+    </ul>
+<?php endif; ?>
+
+<!-- Hidden flag for directory traversal: flag_{hidden-in-source-2024} -->
+</body>
+</html>
+```
+
+### login.php
+```php
+<?php
+session_start();
+include 'db.php';
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $username = $_POST['username'];
+    $password = $_POST['password'];
+
+    // ⚠️ VULNERABLE: SQL injection via direct concatenation
+    $sql = "SELECT * FROM users WHERE username = '$username' AND password = '$password'";
+    $result = $conn->query($sql);
+
+    if ($result->num_rows === 1) {
+        $_SESSION['username'] = $username;
+        $user = $result->fetch_assoc();
+        $_SESSION['is_admin'] = $user['is_admin'];
+        header("Location: index.php");
+        exit();
+    } else {
+        $error = "Invalid credentials";
+    }
+}
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>Login - SecureShop</title></head>
+<body>
+<h2>Login</h2>
+<form method="POST">
+    Username: <input name="username"><br><br>
+    Password: <input name="password" type="password"><br><br>
+    <input type="submit" value="Login">
+</form>
+<?php if (!empty($error)) echo "<p style='color:red;'>$error</p>"; ?>
+<p><a href="register.php">Don't have an account? Register here</a></p>
+<p><a href="index.php">Back to Home</a></p>
+</body>
+</html>
+```
+
+### register.php
+```php
+<?php
+include 'db.php';
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+    $username = $_POST['username'];
+    $password = $_POST['password'];
+
+    // ⚠️ VULNERABLE: SQL injection and no validation/sanitization
+    $sql = "INSERT INTO users (username, password, is_admin) VALUES ('$username', '$password', 0)";
+    if ($conn->query($sql)) {
+        echo "<p style='color:green;'>Registration successful. <a href='login.php'>Login</a></p>";
+        exit();
+    } else {
+        echo "<p style='color:red;'>Error: " . $conn->error . "</p>";
+    }
+}
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>Register - SecureShop</title></head>
+<body>
+<h2>Register</h2>
+<form method="POST">
+    Username: <input name="username"><br><br>
+    Password: <input name="password" type="password"><br><br>
+    <input type="submit" value="Register">
+</form>
+<p><a href="login.php">Already have an account? Login here</a></p>
+<p><a href="index.php">Back to Home</a></p>
+</body>
+</html>
+```
+
+### products.php
+```php
+<?php
+include 'db.php';
+
+$result = $conn->query("SELECT * FROM products");
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>Products - SecureShop</title></head>
+<body>
+<h2>Our Products</h2>
+<ul>
+<?php while ($row = $result->fetch_assoc()): ?>
+    <li>
+        <a href="product.php?id=<?= $row['id'] ?>">
+            <?= $row['name'] ?> - $<?= $row['price'] ?>
+        </a>
+    </li>
+<?php endwhile; ?>
+</ul>
+<p><a href="search.php">Search Products</a></p>
+<p><a href="index.php">Back to Home</a></p>
+</body>
+</html>
+```
+
+### product.php
+```php
+<?php
+include 'db.php';
+
+if (!isset($_GET['id'])) {
+    die("Product ID not specified.");
+}
+
+$id = $_GET['id'];
+
+// ⚠️ VULNERABLE: SQL injection in product ID
+$result = $conn->query("SELECT * FROM products WHERE id = $id");
+
+if ($result->num_rows !== 1) {
+    die("Product not found.");
+}
+
+$product = $result->fetch_assoc();
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title><?= $product['name'] ?> - SecureShop</title></head>
+<body>
+<h2><?= $product['name'] ?></h2>
+<p><?= $product['description'] ?></p>
+<p><strong>Price: $<?= $product['price'] ?></strong></p>
+
+<?php if ($product['name'] == 'Secret Item'): ?>
+    <!-- CTF Flag: flag_{product-detail-9876} -->
+<?php endif; ?>
+
+<p><a href="products.php">Back to Products</a></p>
+<p><a href="index.php">Back to Home</a></p>
+</body>
+</html>
+```
+
+### admin.php
+```php
+<?php
+session_start();
+include 'db.php';
+
+if (!isset($_SESSION['username']) || $_SESSION['is_admin'] != 1) {
+    die("Access denied. Admins only.");
+}
+
+$result = $conn->query("SELECT id, username, is_admin FROM users");
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>Admin Panel - SecureShop</title></head>
+<body>
+<h2>Admin Panel</h2>
+<p>Welcome, Administrator <?= $_SESSION['username'] ?>!</p>
+<h3>User Management</h3>
+<table border="1">
+    <tr><th>ID</th><th>Username</th><th>Is Admin</th></tr>
+    <?php while ($row = $result->fetch_assoc()): ?>
+        <tr>
+            <td><?= $row['id'] ?></td>
+            <td><?= $row['username'] ?></td>
+            <td><?= $row['is_admin'] ? "Yes" : "No" ?></td>
+        </tr>
+    <?php endwhile; ?>
+</table>
+
+<!-- Hidden admin flag: flag_{admin-panel-access-2024} -->
+<p><a href="index.php">Back to Home</a></p>
+</body>
+</html>
+```
+
+### logout.php
+```php
+<?php
+session_start();
+session_unset();
+session_destroy();
+header("Location: login.php");
+exit();
+?>
+```
+
+## Step 6: Configure Apache
+
+```bash
+# Enable PHP module (if not already enabled)
+sudo a2enmod php8.4
+
+# Create a basic virtual host (optional)
+sudo nano /etc/apache2/sites-available/secureshop.conf
+```
+
+Add this configuration:
+```apache
+<VirtualHost *:80>
+    ServerName secureshop.local
+    DocumentRoot /var/www/html
+    
+    # Intentionally weak security for the project
+    <Directory /var/www/html>
+        Options Indexes FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    
+    # Enable error logging
+    ErrorLog ${APACHE_LOG_DIR}/secureshop_error.log
+    CustomLog ${APACHE_LOG_DIR}/secureshop_access.log combined
+</VirtualHost>
+```
+
+```bash
+# Enable the site
+sudo a2ensite secureshop.conf
+
+# Restart Apache
+sudo systemctl restart apache2
+```
+
+## Step 7: Add More Vulnerabilities for CTF
+
+Create additional vulnerable endpoints:
+
+### search.php (for XSS and SQLi)
+```php
+<?php
+include 'db.php';
+?>
+
+<!DOCTYPE html>
+<html>
+<head><title>Product Search</title></head>
+<body>
+<h2>Search Products</h2>
+<form method="GET">
+    Search: <input name="q" value="<?= $_GET['q'] ?? '' ?>">
+    <input type="submit" value="Search">
+</form>
+
+<?php
+if (isset($_GET['q'])) {
+    $search = $_GET['q'];
+    // Vulnerable to both XSS and SQLi
+    echo "<h3>Results for: " . $search . "</h3>";
+    
+    $sql = "SELECT * FROM products WHERE name LIKE '%$search%'";
+    $result = $conn->query($sql);
+    
+    if ($result && $result->num_rows > 0) {
+        while ($row = $result->fetch_assoc()) {
+            echo "<p>" . $row['name'] . " - $" . $row['price'] . "</p>";
+            // Hidden flag in search results
+            if ($row['name'] == 'Secret Item') {
+                echo "<!-- Flag found: flag_{search-sqli-2024} -->";
+            }
+        }
+    } else {
+        echo "<p>No products found</p>";
+    }
+}
+?>
+<a href="index.php">Back to Home</a>
+</body>
+</html>
+```
+
+## Step 8: Test the Deployment
+
+```bash
+# Check if Apache is running
+sudo systemctl status apache2
+
+# Check if MariaDB is running
+sudo systemctl status mariadb
+
+# Test database connection
+mysql -u shopuser -p secureshop
+
+# Get your local IP address
+ip addr show | grep 'inet 192.168'
+
+# Test in browser
+# Navigate to: http://localhost or http://your-kali-ip
+```
+
+## Step 9: Configure Logging for Splunk
+
+```bash
+# Ensure Apache logs are being written
+sudo tail -f /var/log/apache2/access.log
+sudo tail -f /var/log/apache2/error.log
+
+# Make logs readable for Splunk
+sudo chmod 644 /var/log/apache2/access.log
+sudo chmod 644 /var/log/apache2/error.log
+
+# Optional: Create custom log format for better Splunk parsing
+sudo nano /etc/apache2/apache2.conf
+```
+
+Add this line to apache2.conf:
+```apache
+LogFormat "%h %l %u %t \"%r\" %>s %O \"%{Referer}i\" \"%{User-Agent}i\" %D" combined_with_time
+```
+
+## Step 10: Final Security Checklist (Intentionally Weak)
+
+- ✅ SQL Injection vulnerabilities in place
+- ✅ XSS vulnerabilities active
+- ✅ Weak authentication implemented
+- ✅ Directory listing enabled
+- ✅ Detailed error messages exposed
+- ✅ Flags embedded in database and comments
+- ✅ No rate limiting on login
+- ✅ No CSRF protection
+- ✅ Logging enabled for Splunk analysis
+
+## Testing Commands for Attackers
+
+```bash
+# Network scanning
+nmap -sS -O target_ip
+
+# SQL injection testing
+sqlmap -u "http://target_ip/login.php" --data="username=admin&password=test" --level=5 --risk=3
+
+# Directory enumeration
+dirb http://target_ip
+
+# XSS testing
+# Try: <script>alert('XSS')</script> in search box
+```
+
+## Troubleshooting
+
+```bash
+# If PHP pages show source code instead of executing:
+sudo a2enmod php8.4
+sudo systemctl restart apache2
+
+# If database connection fails:
+sudo systemctl status mariadb
+mysql -u shopuser -p
+
+# Check Apache error logs:
+sudo tail -f /var/log/apache2/error.log
+
+# Fix permissions if needed:
+sudo chown -R www-data:www-data /var/www/html/
+sudo chmod -R 755 /var/www/html/
+```
+
+Your SecureShop website is now ready for the security simulation project with multiple attack vectors and plenty of logging for Splunk analysis!
